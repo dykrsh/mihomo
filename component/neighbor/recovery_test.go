@@ -421,19 +421,24 @@ func TestRecoveryCancelledFlightNotRejoined(t *testing.T) {
 	}
 }
 
-func TestRecoveryInterfaceErrorContinues(t *testing.T) {
+func TestRecoveryInterfaceErrorIsUnknown(t *testing.T) {
 	tab := emptyLAN(t)
 	tab.apply(event{link: true, index: 3, name: "broken"})
+	queried := make(map[int]bool)
 	r := recoveryResolver(t, DefaultOptions(), tab, func() (queryBackend, error) {
 		return &fakeQuery{get: func(ctx context.Context, index int, ip netip.Addr) (MAC, bool, error) {
+			queried[index] = true
 			if index == 3 {
 				return MAC{}, false, errors.New("broken interface netlink error")
 			}
 			return testMAC, true, nil
 		}}, nil
 	})
-	if mac, ok := r.Resolve(context.Background(), 0, testIP); !ok || mac != testMAC {
-		t.Fatal("query failed because one unrelated interface errored")
+	if _, ok := r.Resolve(context.Background(), 0, testIP); ok {
+		t.Fatal("partial query treated as an unambiguous source MAC")
+	}
+	if !queried[2] || !queried[3] {
+		t.Fatal("recovery did not inspect every interface")
 	}
 }
 
@@ -507,4 +512,17 @@ func TestRecoveryTooManyInterfacesProbes(t *testing.T) {
 	}
 }
 
-
+func TestRecoveryOptionsDoNotAliasCaller(t *testing.T) {
+	interfaces := []string{"lan"}
+	r := New(nil)
+	r.Configure(Options{Probe: true, Timeout: time.Second, Interfaces: interfaces})
+	interfaces[0] = "wan"
+	if got := r.Options().Interfaces[0]; got != "lan" {
+		t.Fatalf("caller changed the active whitelist to %q", got)
+	}
+	returned := r.Options()
+	returned.Interfaces[0] = "guest"
+	if got := r.Options().Interfaces[0]; got != "lan" {
+		t.Fatalf("options reader changed the active whitelist to %q", got)
+	}
+}

@@ -104,6 +104,7 @@ func (r *Resolver) stopRecovery() {
 func (r *Resolver) Configure(options Options) {
 	r.lifecycle.Lock()
 	defer r.lifecycle.Unlock()
+	options.Interfaces = append([]string(nil), options.Interfaces...)
 	r.mu.Lock()
 	old := r.options
 	r.options = options
@@ -113,7 +114,13 @@ func (r *Resolver) Configure(options Options) {
 		r.startRecovery(r.ctx)
 	}
 }
-func (r *Resolver) Options() Options { r.mu.RLock(); defer r.mu.RUnlock(); return r.options }
+func (r *Resolver) Options() Options {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	options := r.options
+	options.Interfaces = append([]string(nil), options.Interfaces...)
+	return options
+}
 
 // Resolve performs at most one shared, bounded recovery after a cache miss.
 // A cancelled waiter does not cancel other connections sharing its recovery.
@@ -344,6 +351,7 @@ func (r *Resolver) recover(ctx context.Context, g *recoveryGroup, key recoveryKe
 
 	var found MAC
 	count := 0
+	queryFailed := false
 	if len(indices) <= maxQueryInterfaces {
 		queryCtx, cancel := context.WithTimeout(ctx, queryTimeout)
 		defer cancel()
@@ -354,6 +362,7 @@ func (r *Resolver) recover(ctx context.Context, g *recoveryGroup, key recoveryKe
 					return MAC{}, false
 				}
 				r.recoveryError(g, err)
+				queryFailed = true
 				continue
 			}
 			if ok {
@@ -375,6 +384,10 @@ func (r *Resolver) recover(ctx context.Context, g *recoveryGroup, key recoveryKe
 	if r.revision != rev {
 		r.mu.RUnlock()
 		return current, known
+	}
+	if queryFailed {
+		r.mu.RUnlock()
+		return MAC{}, false
 	}
 	if count > 0 {
 		r.mu.RUnlock()
