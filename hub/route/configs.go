@@ -3,6 +3,7 @@ package route
 import (
 	"net/netip"
 	"path/filepath"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/dialer"
@@ -34,6 +35,8 @@ func configRouter() http.Handler {
 }
 
 type configSchema struct {
+	SrcMACProbe       *bool                    `json:"src-mac-probe"`
+	SrcMACTimeout     *int                     `json:"src-mac-timeout"`
 	Port              *int                     `json:"port"`
 	SocksPort         *int                     `json:"socks-port"`
 	RedirPort         *int                     `json:"redir-port"`
@@ -329,6 +332,22 @@ func patchConfigs(w http.ResponseWriter, r *http.Request) {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, ErrBadRequest)
 		return
+	}
+
+	if general.SrcMACProbe != nil || general.SrcMACTimeout != nil {
+		options := tunnel.SourceMACOptions()
+		probe, ms := options.Probe, int(options.Timeout/time.Millisecond)
+		if general.SrcMACProbe != nil {
+			probe = *general.SrcMACProbe
+		}
+		if general.SrcMACTimeout != nil {
+			ms = *general.SrcMACTimeout
+		}
+		if err := tunnel.SetSourceMACOptions(probe, ms); err != nil {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, render.M{"message": err.Error()})
+			return
+		}
 	}
 
 	if general.AllowLan != nil {

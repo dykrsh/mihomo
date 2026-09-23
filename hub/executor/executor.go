@@ -98,6 +98,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateExperimental(cfg.Experimental)
 	updateUsers(cfg.Users)
 	updateProxies(cfg.Proxies, cfg.Providers)
+	_ = tunnel.SetSourceMACOptions(cfg.General.SrcMACProbe, cfg.General.SrcMACTimeout)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
 	updateSniffer(cfg.Sniffer)
 	updateHosts(cfg.Hosts)
@@ -115,6 +116,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	loadProvider(cfg.Providers)
 	updateProfile(cfg)
 	loadProvider(cfg.RuleProviders)
+	tunnel.RefreshSourceMAC()
 	runtime.GC()
 	tunnel.OnRunning()
 	updateUpdater(cfg)
@@ -127,6 +129,7 @@ func initInnerTcp() {
 }
 
 func GetGeneral() *config.General {
+	macOptions := tunnel.SourceMACOptions()
 	ports := listener.GetPorts()
 	var authenticator []string
 	if auth := authStore.Default.Authenticator(); auth != nil {
@@ -134,6 +137,8 @@ func GetGeneral() *config.General {
 	}
 
 	general := &config.General{
+		SrcMACProbe:   macOptions.Probe,
+		SrcMACTimeout: int(macOptions.Timeout / time.Millisecond),
 		Inbound: config.Inbound{
 			Port:              ports.Port,
 			SocksPort:         ports.SocksPort,
@@ -530,6 +535,7 @@ func updateIPTables(cfg *config.Config) {
 }
 
 func Shutdown() {
+	tunnel.ShutdownSourceMAC()
 	listener.Cleanup()
 	tproxy.CleanupTProxyIPTables()
 	resolver.StoreFakePoolState()
