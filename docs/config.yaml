@@ -27,6 +27,10 @@ find-process-mode: strict
 
 mode: rule
 
+# Linux / OpenWrt 支持 SRC-MAC：按系统邻居表中的来源 MAC 分流。
+# 启用相关规则时读取邻居表并订阅更新；缓存未命中会立即继续匹配后续规则。
+# 需要入站保留设备真实来源 IP；不主动发送 ARP/NDP 探测。
+
 #自定义 geodata url
 geox-url:
   geoip: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
@@ -1980,6 +1984,7 @@ rule-providers:
       - 'books.itunes.apple.com'
 
 rules:
+  # - SRC-MAC,aa:bb:cc:dd:ee:ff,PROXY
   - RULE-SET,rule1,REJECT
   - IP-ASN,1,PROXY
   - DOMAIN-REGEX,^abc,DIRECT

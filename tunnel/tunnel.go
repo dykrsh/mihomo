@@ -204,11 +204,15 @@ func Listeners() map[string]C.InboundListener {
 
 // UpdateRules handle update rules
 func UpdateRules(newRules []C.Rule, newSubRule map[string][]C.Rule, rp map[string]P.RuleProvider) {
+	sourceMACConfigMu.Lock()
+	defer sourceMACConfigMu.Unlock()
 	configMux.Lock()
 	rules = newRules
 	ruleProviders = rp
 	subRules = newSubRule
 	configMux.Unlock()
+	sourceMACClosed = false
+	refreshSourceMACLocked()
 }
 
 // Proxies return all proxies
@@ -334,6 +338,7 @@ func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err erro
 	}
 
 	helper := C.RuleMatchHelper{
+		FindSourceMAC: sourceMACLookup(metadata, sourceMACResolver.Lookup),
 		ResolveIP: func() {
 			if !resolved && metadata.Host != "" && !metadata.Resolved() {
 				ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDNSTimeout)

@@ -33,6 +33,15 @@ func (c *classicalStrategy) Count() int {
 	return c.count
 }
 
+func (c *classicalStrategy) NeedsSourceMAC() bool {
+	for _, rule := range c.rules {
+		if C.NeedsSourceMAC(rule) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *classicalStrategy) Reset() {
 	c.rules = nil
 	c.count = 0

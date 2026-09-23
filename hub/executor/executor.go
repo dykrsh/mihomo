@@ -115,6 +115,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	loadProvider(cfg.Providers)
 	updateProfile(cfg)
 	loadProvider(cfg.RuleProviders)
+	tunnel.RefreshSourceMAC()
 	runtime.GC()
 	tunnel.OnRunning()
 	updateUpdater(cfg)
@@ -530,6 +531,7 @@ func updateIPTables(cfg *config.Config) {
 }
 
 func Shutdown() {
+	tunnel.ShutdownSourceMAC()
 	listener.Cleanup()
 	tproxy.CleanupTProxyIPTables()
 	resolver.StoreFakePoolState()

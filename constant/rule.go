@@ -40,6 +40,7 @@ const (
 	AND
 	OR
 	NOT
+	SrcMAC
 )
 
 type RuleType int
@@ -76,6 +77,8 @@ func (rt RuleType) String() string {
 		return "SrcIPSuffix"
 	case SrcPort:
 		return "SrcPort"
+	case SrcMAC:
+		return "SrcMAC"
 	case DstPort:
 		return "DstPort"
 	case InPort:
@@ -155,7 +158,23 @@ type RuleWrapper interface {
 type RuleMatchHelper struct {
 	ResolveIP     func()
 	FindProcess   func()
+	FindSourceMAC func()
 	CheckPassRule func(adapterName string) bool
+}
+
+// NeedsSourceMAC reports a rule's direct (possibly nested) MAC requirement.
+// Rule-provider dependencies are resolved separately against the applied config.
+func NeedsSourceMAC(rule Rule) bool {
+	if wrapper, ok := rule.(RuleWrapper); ok {
+		return !wrapper.IsDisabled() && NeedsSourceMAC(wrapper.Unwrap())
+	}
+	if rule.RuleType() == SrcMAC {
+		return true
+	}
+	if r, ok := rule.(interface{ NeedsSourceMAC() bool }); ok {
+		return r.NeedsSourceMAC()
+	}
+	return false
 }
 
 type RuleGroup interface {
