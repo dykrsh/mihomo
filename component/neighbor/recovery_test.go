@@ -273,26 +273,44 @@ func TestRecoveryRejectsAmbiguousQueryAndStaleReply(t *testing.T) {
 func TestProbeScope(t *testing.T) {
 	tab := emptyLAN(t)
 	for _, ip := range []string{"192.0.2.10", "2001:db8::1234"} {
-		if got := tab.probeInterface(recoveryKey{ip: netip.MustParseAddr(ip)}); got != 2 {
+		if got := tab.probeInterface(recoveryKey{ip: netip.MustParseAddr(ip)}, nil); got != 2 {
 			t.Fatal("missing on-link scope", ip, got)
 		}
 	}
 	for _, ip := range []string{"198.51.100.10", "192.0.2.1", "192.0.2.0", "192.0.2.255", "2001:db8::1"} {
-		if got := tab.probeInterface(recoveryKey{ip: netip.MustParseAddr(ip)}); got != 0 {
+		if got := tab.probeInterface(recoveryKey{ip: netip.MustParseAddr(ip)}, nil); got != 0 {
 			t.Fatal("unsafe probe scope", ip, got)
 		}
 	}
 	tab.apply(event{link: true, index: 3, name: "guest", probeable: true})
 	tab.apply(event{address: true, index: 3, prefix: netip.MustParsePrefix("192.0.2.2/24")})
-	if tab.probeInterface(recoveryKey{ip: testIP}) != 0 {
+	if tab.probeInterface(recoveryKey{ip: testIP}, nil) != 0 {
 		t.Fatal("overlapping networks should not guess interface")
 	}
-	if tab.probeInterface(recoveryKey{index: 2, ip: testIP}) != 2 {
+	if tab.probeInterface(recoveryKey{index: 2, ip: testIP}, nil) != 2 {
 		t.Fatal("explicit scope ignored")
 	}
 	tab.apply(event{link: true, index: 2, name: "lan", probeable: false})
-	if tab.probeInterface(recoveryKey{index: 2, ip: testIP}) != 0 {
+	if tab.probeInterface(recoveryKey{index: 2, ip: testIP}, nil) != 0 {
 		t.Fatal("down/non-Ethernet interface probed")
+	}
+	tab.apply(event{link: true, index: 2, name: "lan", probeable: true})
+	tab.apply(event{address: true, index: 2, prefix: netip.MustParsePrefix("0.0.0.0/0")})
+	tab.apply(event{address: true, index: 2, prefix: netip.MustParsePrefix("::/0")})
+	if tab.probeInterface(recoveryKey{ip: netip.MustParseAddr("8.8.8.8")}, nil) != 0 {
+		t.Fatal("default route 0.0.0.0/0 probed as on-link")
+	}
+	if tab.probeInterface(recoveryKey{ip: netip.MustParseAddr("2001:4860:4860::8888")}, nil) != 0 {
+		t.Fatal("default route ::/0 probed as on-link")
+	}
+	if tab.probeInterface(recoveryKey{ip: testIP}, []string{"guest"}) != 3 {
+		t.Fatal("whitelist guest ignored")
+	}
+	if tab.probeInterface(recoveryKey{ip: testIP}, []string{"lan"}) != 2 {
+		t.Fatal("whitelist lan ignored")
+	}
+	if tab.probeInterface(recoveryKey{ip: testIP}, []string{"other"}) != 0 {
+		t.Fatal("unlisted interface probed")
 	}
 }
 func TestRecoveryAdmissionLimits(t *testing.T) {
@@ -361,3 +379,132 @@ func TestRecoveryPassiveBudgetAndLastWaiterCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestRecoveryClockRollback(t *testing.T) {
+	r := recoveryResolver(t, DefaultOptions(), emptyLAN(t), func() (queryBackend, error) {
+		return &fakeQuery{get: func(context.Context, int, netip.Addr) (MAC, bool, error) { return testMAC, true, nil }}, nil
+	})
+	r.recovery.mu.Lock()
+	r.recovery.lastToken = time.Now().Add(10 * time.Minute) // simulate clock set backward 10 mins
+	r.recovery.tokens = 16
+	r.recovery.mu.Unlock()
+	if _, ok := r.Resolve(context.Background(), 0, testIP); !ok {
+		t.Fatal("clock rollback caused token exhaustion")
+	}
+}
+
+func TestRecoveryCancelledFlightNotRejoined(t *testing.T) {
+	started := make(chan struct{})
+	var calls atomic.Int32
+	r := recoveryResolver(t, Options{Timeout: time.Second}, emptyLAN(t), func() (queryBackend, error) {
+		return &fakeQuery{get: func(ctx context.Context, _ int, _ netip.Addr) (MAC, bool, error) {
+			calls.Add(1)
+			close(started)
+			<-ctx.Done()
+			return MAC{}, false, ctx.Err()
+		}}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_, _ = r.Resolve(ctx, 0, testIP)
+		close(done)
+	}()
+	<-started
+	cancel()
+	<-done
+	r.recovery.mu.Lock()
+	f := r.recovery.flights[recoveryKey{ip: testIP}]
+	r.recovery.mu.Unlock()
+	if f != nil {
+		t.Fatal("aborted flight was not removed from flights map")
+	}
+}
+
+func TestRecoveryInterfaceErrorContinues(t *testing.T) {
+	tab := emptyLAN(t)
+	tab.apply(event{link: true, index: 3, name: "broken"})
+	r := recoveryResolver(t, DefaultOptions(), tab, func() (queryBackend, error) {
+		return &fakeQuery{get: func(ctx context.Context, index int, ip netip.Addr) (MAC, bool, error) {
+			if index == 3 {
+				return MAC{}, false, errors.New("broken interface netlink error")
+			}
+			return testMAC, true, nil
+		}}, nil
+	})
+	if mac, ok := r.Resolve(context.Background(), 0, testIP); !ok || mac != testMAC {
+		t.Fatal("query failed because one unrelated interface errored")
+	}
+}
+
+func TestRecoveryInterfaceWhitelist(t *testing.T) {
+	tab := emptyLAN(t)
+	tab.apply(event{link: true, index: 3, name: "wan", probeable: true})
+	tab.apply(event{address: true, index: 3, prefix: netip.MustParsePrefix("198.51.100.1/24")})
+
+	queried := make(map[int]bool)
+	r := recoveryResolver(t, Options{Probe: true, Timeout: time.Second, Interfaces: []string{"lan"}}, tab, func() (queryBackend, error) {
+		return &fakeQuery{
+			get: func(ctx context.Context, index int, ip netip.Addr) (MAC, bool, error) {
+				queried[index] = true
+				return testMAC, true, nil
+			},
+			probe: func(ctx context.Context, index int, ip netip.Addr) error {
+				if index != 2 {
+					t.Fatalf("probed non-whitelisted interface %d", index)
+				}
+				return nil
+			},
+		}, nil
+	})
+	if mac, ok := r.Resolve(context.Background(), 0, testIP); !ok || mac != testMAC {
+		t.Fatal("whitelisted LAN not resolved")
+	}
+	if queried[3] {
+		t.Fatal("non-whitelisted interface was queried")
+	}
+	if !queried[2] {
+		t.Fatal("whitelisted interface was not queried")
+	}
+}
+
+func TestRecoveryTooManyInterfacesProbes(t *testing.T) {
+	tab := emptyLAN(t)
+	for i := 4; i < maxQueryInterfaces+10; i++ {
+		tab.apply(event{link: true, index: i, name: "extra"})
+	}
+	probed := make(chan struct{})
+	result := make(chan bool, 1)
+	r := recoveryResolver(t, Options{Probe: true, Timeout: time.Second}, tab, func() (queryBackend, error) {
+		return &fakeQuery{
+			get: func(context.Context, int, netip.Addr) (MAC, bool, error) {
+				t.Fatal("targeted query executed when interface count > maxQueryInterfaces")
+				return MAC{}, false, nil
+			},
+			probe: func(ctx context.Context, index int, ip netip.Addr) error {
+				if index != 2 {
+					t.Fatalf("wrong interface probed %d", index)
+				}
+				close(probed)
+				return nil
+			},
+		}, nil
+	})
+	go func() { mac, ok := r.Resolve(context.Background(), 0, testIP); result <- ok && mac == testMAC }()
+	select {
+	case <-probed:
+	case <-time.After(time.Second):
+		t.Fatal("probe not triggered for >32 interfaces")
+	}
+	publish(t, r, event{index: 2, ip: testIP, mac: testMAC})
+	select {
+	case ok := <-result:
+		if !ok {
+			t.Fatal("probe result not used")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter was not woken by event")
+	}
+}
+
+

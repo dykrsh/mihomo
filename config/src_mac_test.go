@@ -11,10 +11,11 @@ func TestSourceMACTopLevelOptions(t *testing.T) {
 		name, yaml string
 		probe      bool
 		timeout    int
+		interfaces []string
 		invalid    bool
 	}{
 		{name: "defaults", timeout: 1000},
-		{name: "enabled", yaml: "src-mac-probe: true\nsrc-mac-timeout: 750\n", probe: true, timeout: 750},
+		{name: "enabled", yaml: "src-mac-probe: true\nsrc-mac-timeout: 750\nsrc-mac-interfaces: [br-lan, eth0]\n", probe: true, timeout: 750, interfaces: []string{"br-lan", "eth0"}},
 		{name: "zero", yaml: "src-mac-timeout: 0", invalid: true},
 		{name: "negative", yaml: "src-mac-timeout: -1", invalid: true},
 		{name: "overflow", yaml: "src-mac-timeout: 60001", invalid: true},
@@ -34,7 +35,7 @@ func TestSourceMACTopLevelOptions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if general.SrcMACProbe != tc.probe || general.SrcMACTimeout != tc.timeout {
+			if general.SrcMACProbe != tc.probe || general.SrcMACTimeout != tc.timeout || len(general.SrcMACInterfaces) != len(tc.interfaces) {
 				t.Fatal("top-level options not propagated", general)
 			}
 		})

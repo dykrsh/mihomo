@@ -47,8 +47,9 @@ import (
 
 // General config
 type General struct {
-	SrcMACProbe   bool `json:"src-mac-probe"`
-	SrcMACTimeout int  `json:"src-mac-timeout"`
+	SrcMACProbe      bool     `json:"src-mac-probe"`
+	SrcMACTimeout    int      `json:"src-mac-timeout"`
+	SrcMACInterfaces []string `json:"src-mac-interfaces"`
 	Inbound
 	Mode              T.TunnelMode            `json:"mode"`
 	UnifiedDelay      bool                    `json:"unified-delay"`
@@ -405,6 +406,7 @@ type RawTLS struct {
 type RawConfig struct {
 	SrcMACProbe                   bool                    `yaml:"src-mac-probe" json:"src-mac-probe"`
 	SrcMACTimeout                 int                     `yaml:"src-mac-timeout" json:"src-mac-timeout"`
+	SrcMACInterfaces              []string                `yaml:"src-mac-interfaces" json:"src-mac-interfaces"`
 	Port                          int                     `yaml:"port" json:"port"`
 	SocksPort                     int                     `yaml:"socks-port" json:"socks-port"`
 	RedirPort                     int                     `yaml:"redir-port" json:"redir-port"`
@@ -770,8 +772,9 @@ func parseGeneral(cfg *RawConfig) (*General, error) {
 		log.Errorln("The `global-client-fingerprint` configuration is removed, please set `client-fingerprint` directly on the proxy instead")
 	}
 	return &General{
-		SrcMACProbe:   cfg.SrcMACProbe,
-		SrcMACTimeout: cfg.SrcMACTimeout,
+		SrcMACProbe:      cfg.SrcMACProbe,
+		SrcMACTimeout:    cfg.SrcMACTimeout,
+		SrcMACInterfaces: cfg.SrcMACInterfaces,
 		Inbound: Inbound{
 			Port:              cfg.Port,
 			SocksPort:         cfg.SocksPort,

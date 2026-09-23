@@ -12,20 +12,22 @@ import (
 
 func TestSourceMACConfigAPI(t *testing.T) {
 	old := tunnel.SourceMACOptions()
-	t.Cleanup(func() { _ = tunnel.SetSourceMACOptions(old.Probe, int(old.Timeout/time.Millisecond)) })
-	if err := tunnel.SetSourceMACOptions(false, 1000); err != nil {
+	t.Cleanup(func() { _ = tunnel.SetSourceMACOptions(old.Probe, int(old.Timeout/time.Millisecond), old.Interfaces) })
+	if err := tunnel.SetSourceMACOptions(false, 1000, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		body    string
-		status  int
-		probe   bool
-		timeout int
+		body       string
+		status     int
+		probe      bool
+		timeout    int
+		interfaces []string
 	}{
-		{`{"src-mac-probe":true}`, 204, true, 1000},
-		{`{"src-mac-timeout":750}`, 204, true, 750},
-		{`{"src-mac-probe":false,"src-mac-timeout":0}`, 400, true, 750},
-		{`{"src-mac-probe":false}`, 204, false, 750},
+		{body: `{"src-mac-probe":true}`, status: 204, probe: true, timeout: 1000},
+		{body: `{"src-mac-timeout":750}`, status: 204, probe: true, timeout: 750},
+		{body: `{"src-mac-probe":false,"src-mac-timeout":0}`, status: 400, probe: true, timeout: 750},
+		{body: `{"src-mac-probe":false}`, status: 204, probe: false, timeout: 750},
+		{body: `{"src-mac-interfaces":["br-lan","eth0"]}`, status: 204, probe: false, timeout: 750, interfaces: []string{"br-lan", "eth0"}},
 	} {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest("PATCH", "/", strings.NewReader(tc.body))
@@ -37,13 +39,14 @@ func TestSourceMACConfigAPI(t *testing.T) {
 		w = httptest.NewRecorder()
 		getConfigs(w, httptest.NewRequest("GET", "/", nil))
 		var got struct {
-			Probe   bool `json:"src-mac-probe"`
-			Timeout int  `json:"src-mac-timeout"`
+			Probe      bool     `json:"src-mac-probe"`
+			Timeout    int      `json:"src-mac-timeout"`
+			Interfaces []string `json:"src-mac-interfaces"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatal(err)
 		}
-		if got.Probe != tc.probe || got.Timeout != tc.timeout {
+		if got.Probe != tc.probe || got.Timeout != tc.timeout || len(got.Interfaces) != len(tc.interfaces) {
 			t.Fatalf("PATCH did not preserve omitted options or rejected update: %+v", got)
 		}
 	}

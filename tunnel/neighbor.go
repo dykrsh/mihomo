@@ -127,13 +127,17 @@ func sourceMACLookup(metadata *C.Metadata, lookup func(int, netip.Addr) (neighbo
 
 // SetSourceMACOptions applies top-level options. Changes cancel outstanding
 // recoveries so disabling probes takes effect without waiting for old deadlines.
-func SetSourceMACOptions(probe bool, timeoutMS int) error {
+func SetSourceMACOptions(probe bool, timeoutMS int, interfaces []string) error {
 	if err := neighbor.ValidateTimeout(timeoutMS); err != nil {
 		return err
 	}
 	sourceMACConfigMu.Lock()
 	defer sourceMACConfigMu.Unlock()
-	sourceMACResolver.Configure(neighbor.Options{Probe: probe, Timeout: time.Duration(timeoutMS) * time.Millisecond})
+	sourceMACResolver.Configure(neighbor.Options{
+		Probe:      probe,
+		Timeout:    time.Duration(timeoutMS) * time.Millisecond,
+		Interfaces: interfaces,
+	})
 	return nil
 }
 func SourceMACOptions() neighbor.Options { return sourceMACResolver.Options() }

@@ -41,3 +41,11 @@ func TestSourceMACStrategyPublication(t *testing.T) {
 		t.Fatal("new MAC requirement missing")
 	}
 }
+
+func TestBaseProviderNilStrategyCount(t *testing.T) {
+	p := &baseProvider{}
+	if p.Count() != 0 {
+		t.Fatal("expected 0 count for nil strategy")
+	}
+}
+

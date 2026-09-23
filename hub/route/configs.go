@@ -37,6 +37,7 @@ func configRouter() http.Handler {
 type configSchema struct {
 	SrcMACProbe       *bool                    `json:"src-mac-probe"`
 	SrcMACTimeout     *int                     `json:"src-mac-timeout"`
+	SrcMACInterfaces  *[]string                `json:"src-mac-interfaces"`
 	Port              *int                     `json:"port"`
 	SocksPort         *int                     `json:"socks-port"`
 	RedirPort         *int                     `json:"redir-port"`
@@ -334,16 +335,19 @@ func patchConfigs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if general.SrcMACProbe != nil || general.SrcMACTimeout != nil {
+	if general.SrcMACProbe != nil || general.SrcMACTimeout != nil || general.SrcMACInterfaces != nil {
 		options := tunnel.SourceMACOptions()
-		probe, ms := options.Probe, int(options.Timeout/time.Millisecond)
+		probe, ms, ifaces := options.Probe, int(options.Timeout/time.Millisecond), options.Interfaces
 		if general.SrcMACProbe != nil {
 			probe = *general.SrcMACProbe
 		}
 		if general.SrcMACTimeout != nil {
 			ms = *general.SrcMACTimeout
 		}
-		if err := tunnel.SetSourceMACOptions(probe, ms); err != nil {
+		if general.SrcMACInterfaces != nil {
+			ifaces = *general.SrcMACInterfaces
+		}
+		if err := tunnel.SetSourceMACOptions(probe, ms, ifaces); err != nil {
 			render.Status(r, http.StatusBadRequest)
 			render.JSON(w, r, render.M{"message": err.Error()})
 			return

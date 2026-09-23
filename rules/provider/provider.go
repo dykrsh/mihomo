@@ -101,7 +101,10 @@ func (bp *baseProvider) Behavior() P.RuleBehavior {
 }
 
 func (bp *baseProvider) Count() int {
-	return bp.currentStrategy().Count()
+	if s := bp.currentStrategy(); s != nil {
+		return s.Count()
+	}
+	return 0
 }
 
 func (bp *baseProvider) Match(metadata *C.Metadata, helper C.RuleMatchHelper) bool {

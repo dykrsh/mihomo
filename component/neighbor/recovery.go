@@ -20,11 +20,24 @@ const (
 )
 
 type Options struct {
-	Probe   bool
-	Timeout time.Duration
+	Probe      bool
+	Timeout    time.Duration
+	Interfaces []string
 }
 
 func DefaultOptions() Options { return Options{Timeout: time.Second} }
+
+func (o Options) Equal(other Options) bool {
+	if o.Probe != other.Probe || o.Timeout != other.Timeout || len(o.Interfaces) != len(other.Interfaces) {
+		return false
+	}
+	for i, v := range o.Interfaces {
+		if v != other.Interfaces[i] {
+			return false
+		}
+	}
+	return true
+}
 func ValidateTimeout(ms int) error {
 	if ms <= 0 || ms > 60000 {
 		return fmt.Errorf("src-mac-timeout must be between 1 and 60000 milliseconds")
@@ -95,7 +108,7 @@ func (r *Resolver) Configure(options Options) {
 	old := r.options
 	r.options = options
 	r.mu.Unlock()
-	if old != options && r.cancel != nil {
+	if !old.Equal(options) && r.cancel != nil {
 		r.stopRecovery()
 		r.startRecovery(r.ctx)
 	}
@@ -142,11 +155,15 @@ func (g *recoveryGroup) resolve(ctx context.Context, key recoveryKey, work func(
 		}
 	} else {
 		now := time.Now()
-		g.tokens += now.Sub(g.lastToken).Seconds() * maxRecoveries
-		if g.tokens > maxRecoveries {
-			g.tokens = maxRecoveries
+		if now.Before(g.lastToken) {
+			g.lastToken = now
+		} else {
+			g.tokens += now.Sub(g.lastToken).Seconds() * maxRecoveries
+			if g.tokens > maxRecoveries {
+				g.tokens = maxRecoveries
+			}
+			g.lastToken = now
 		}
-		g.lastToken = now
 		if now.Before(g.cooldown[key]) || len(g.flights) >= maxRecoveries || g.tokens < 1 {
 			g.mu.Unlock()
 			return MAC{}, false
@@ -175,7 +192,9 @@ func (g *recoveryGroup) resolve(ctx context.Context, key recoveryKey, work func(
 			mac, ok := work(workCtx)
 			g.mu.Lock()
 			f.mac, f.ok = mac, ok
-			delete(g.flights, key)
+			if g.flights[key] == f {
+				delete(g.flights, key)
+			}
 			g.cooldown[key] = time.Now().Add(recoveryCooldown)
 			close(f.done)
 			g.mu.Unlock()
@@ -190,6 +209,9 @@ func (g *recoveryGroup) resolve(ctx context.Context, key recoveryKey, work func(
 		g.waiters--
 		if f.waiters == 0 {
 			f.cancel()
+			if g.flights[key] == f {
+				delete(g.flights, key)
+			}
 		}
 		g.mu.Unlock()
 	}()
@@ -235,10 +257,26 @@ func (t *table) key(index int, ip netip.Addr) (recoveryKey, bool) {
 
 // probeInterface selects a single directly connected Ethernet interface. It
 // does not infer ingress from a route lookup, or probe via a next-hop gateway.
-func (t *table) probeInterface(key recoveryKey) int {
+func (t *table) probeInterface(key recoveryKey, allowed []string) int {
+	var allowedMap map[string]struct{}
+	if len(allowed) > 0 {
+		allowedMap = make(map[string]struct{}, len(allowed))
+		for _, name := range allowed {
+			allowedMap[name] = struct{}{}
+		}
+	}
 	selected := 0
 	for index, addresses := range t.addresses {
+		if allowedMap != nil {
+			name := t.links[index]
+			if _, ok := allowedMap[name]; !ok {
+				continue
+			}
+		}
 		for prefix := range addresses {
+			if prefix.Bits() == 0 {
+				continue
+			}
 			if prefix.Addr() == key.ip {
 				return 0
 			} // never solicit our own address
@@ -270,19 +308,29 @@ func (r *Resolver) recover(ctx context.Context, g *recoveryGroup, key recoveryKe
 		r.mu.RUnlock()
 		return MAC{}, false
 	}
+	var allowedMap map[string]struct{}
+	if len(g.options.Interfaces) > 0 {
+		allowedMap = make(map[string]struct{}, len(g.options.Interfaces))
+		for _, name := range g.options.Interfaces {
+			allowedMap[name] = struct{}{}
+		}
+	}
 	indices := make([]int, 0, len(r.table.links))
-	for index := range r.table.links {
+	for index, name := range r.table.links {
+		if allowedMap != nil {
+			if _, ok := allowedMap[name]; !ok {
+				continue
+			}
+		}
 		if key.index == 0 || key.index == index {
 			indices = append(indices, index)
 		}
 	}
 	rev := r.revision
 	r.mu.RUnlock()
-	if len(indices) == 0 || len(indices) > maxQueryInterfaces {
+	if len(indices) == 0 {
 		return MAC{}, false
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, queryTimeout)
-	defer cancel()
 	open := r.query
 	if open == nil {
 		open = openQueryBackend
@@ -293,24 +341,30 @@ func (r *Resolver) recover(ctx context.Context, g *recoveryGroup, key recoveryKe
 		return MAC{}, false
 	}
 	defer q.Close()
+
 	var found MAC
 	count := 0
-	for _, index := range indices {
-		mac, ok, err := q.Get(queryCtx, index, key.ip)
-		if err != nil {
-			if queryCtx.Err() == nil {
+	if len(indices) <= maxQueryInterfaces {
+		queryCtx, cancel := context.WithTimeout(ctx, queryTimeout)
+		defer cancel()
+		for _, index := range indices {
+			mac, ok, err := q.Get(queryCtx, index, key.ip)
+			if err != nil {
+				if queryCtx.Err() != nil {
+					return MAC{}, false
+				}
 				r.recoveryError(g, err)
+				continue
 			}
+			if ok {
+				found = mac
+				count++
+			}
+		}
+		cancel()
+		if ctx.Err() != nil || count > 1 {
 			return MAC{}, false
 		}
-		if ok {
-			found = mac
-			count++
-		}
-	}
-	cancel()
-	if ctx.Err() != nil || count > 1 {
-		return MAC{}, false
 	}
 	r.mu.RLock()
 	if r.table == nil || r.recovery != g {
@@ -326,7 +380,7 @@ func (r *Resolver) recover(ctx context.Context, g *recoveryGroup, key recoveryKe
 		r.mu.RUnlock()
 		return found, count == 1
 	} // never write a query reply over newer notifications
-	probeIndex := r.table.probeInterface(key)
+	probeIndex := r.table.probeInterface(key, g.options.Interfaces)
 	r.mu.RUnlock()
 	if !g.options.Probe || probeIndex == 0 {
 		return MAC{}, false
@@ -346,7 +400,7 @@ func (r *Resolver) recover(ctx context.Context, g *recoveryGroup, key recoveryKe
 		mac, ok := r.table.lookup(key.index, key.ip)
 		ambiguous := key.index == 0 && len(r.table.byIP[key.ip]) > 1
 		changed := r.changed
-		eligible := r.table.probeInterface(key) == probeIndex
+		eligible := r.table.probeInterface(key, g.options.Interfaces) == probeIndex
 		r.mu.RUnlock()
 		if ok {
 			return mac, true
