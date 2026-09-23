@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Tag version to release"
+        description: "Release version (use test-* for fork test releases)"
         required: true
   push:
     paths-ignore:
@@ -14,6 +14,7 @@ on:
       - Alpha
     tags:
       - "v*"
+      - "test-*"
   pull_request:
     branches:
       - Alpha
@@ -25,6 +26,7 @@ env:
   REGISTRY: docker.io
 jobs:
   build:
+    if: ${{ github.repository == 'MetaCubeX/mihomo' || (github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/test-')) }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -387,7 +389,7 @@ jobs:
 
   Upload-Release:
     permissions: write-all
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}
+    if: ${{ github.repository == 'MetaCubeX/mihomo' && github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}
     needs: [build]
     runs-on: ubuntu-latest
     steps:
@@ -444,8 +446,103 @@ jobs:
           files: bin/*
           body_path: release.md
 
+  fork_test_build:
+    if: ${{ github.repository != 'MetaCubeX/mihomo' && (startsWith(github.ref, 'refs/tags/test-') || (github.event_name == 'workflow_dispatch' && startsWith(inputs.version, 'test-'))) }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    env:
+      CGO_ENABLED: '0'
+      GOTOOLCHAIN: local
+      SKIP_CONCURRENT_TEST: '1'
+      SKIP_INTEROP_TEST: '1'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: 'https://github.com/MetaCubeX/go/releases/download/build'
+          go-version: '1.26'
+
+      - name: Set test version
+        id: version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="$RELEASE_VERSION"
+          fi
+          if ! [[ "$version" =~ ^test-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || ! git check-ref-format "refs/tags/$version"; then
+            echo "Invalid test release tag: $version" >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: go test ./... -tags with_gvisor -count=1
+
+      - name: Update CA bundle
+        run: cp /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
+
+      - name: Build Linux amd64 compatible binary
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.value }}
+          GOOS: linux
+          GOARCH: amd64
+          GOAMD64: v1
+        run: |
+          set -euo pipefail
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -tags with_gvisor -trimpath -ldflags "-X github.com/metacubex/mihomo/constant.Version=$RELEASE_VERSION -X github.com/metacubex/mihomo/constant.BuildTime=$build_time -w -s -buildid=" -o mihomo .
+          ./mihomo -v
+          mkdir -p dist
+          gzip -c mihomo > "dist/mihomo-linux-amd64-compatible-$RELEASE_VERSION.gz"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: fork-test-linux-amd64
+          path: dist/*.gz
+          if-no-files-found: error
+
+  upload_test_release:
+    needs: [fork_test_build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          path: bin/
+          merge-multiple: true
+
+      - name: Calculate checksum
+        run: |
+          cd bin
+          sha256sum mihomo-linux-amd64-compatible-*.gz > checksums.txt
+
+      - name: Publish test prerelease
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.fork_test_build.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          body: |
+            Fork test build from commit `${{ github.sha }}`.
+            Linux x86-64 compatible binary with gVisor support.
+          files: |
+            bin/mihomo-linux-amd64-compatible-*.gz
+            bin/checksums.txt
+
   Docker:
-    if: ${{ !startsWith(github.event_name, 'pull_request') }}
+    if: ${{ github.repository == 'MetaCubeX/mihomo' && !startsWith(github.event_name, 'pull_request') }}
     permissions: write-all
     needs: [build]
     runs-on: ubuntu-latest
