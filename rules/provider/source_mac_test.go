@@ -48,4 +48,3 @@ func TestBaseProviderNilStrategyCount(t *testing.T) {
 		t.Fatal("expected 0 count for nil strategy")
 	}
 }
-

@@ -194,6 +194,8 @@ sing-box 官方 Android 使用说明要求受支持的图形客户端、Android 
 
 TUN 本身不交付 Ethernet 头，无法直接从 TUN 数据包中读出原始客户端 MAC。当前 mihomo 在 `listener/sing_tun/server.go` 创建 TUN 及协议栈，经 `listener/sing_tun/dns.go` 的 handler 转入 `listener/sing`，后者根据来源/目标地址构建连接元数据，没有原始来源 MAC 的传递字段。切换 TUN 的协议栈实现不会凭空恢复缺失的二层信息。
 
+2026-11-05 同步上游 `Alpha` 至 `69c16319` 后，默认 TUN 协议栈由 gVisor 改为 `mips`，新增 `congestion-controller`（仅对 `mips` 生效）和系统 DNS 接入选项 `dns-mode`。这些设置不提供原始来源 MAC；本节关于邻居查询、入口来源身份和首连接未知窗口的边界仍然适用。
+
 提前采集方案仍可保留当前 TUN 转发路径，但需在可见原始以太网头的 LAN 接收位置额外挂接采集器：
 
 ```text
@@ -383,6 +385,8 @@ Linux 隔离网络命名空间测试使用 veth 与 `ip neigh`，通过真实 ne
 
 2026-09-23 本轮补查与探测变更通过核心包并发检测、`with_gvisor` 规则与 tunnel 测试，以及上述 CI 设置下的整仓库回归。新增测试覆盖内核已有记录补查、缓存命中不查询、探测关闭立即返回、共享预算、请求合并、等待者取消、最后一个等待者退出、停用/重配置释放资源、接口歧义、旧查询回复失效、资源限额、等待期间配置更新、规则不重跑和 provider 策略固定。
 
+2026-11-05 同步上游 `Alpha` 至 `69c16319`，使用 Go 1.27.3 在 Linux amd64 上完成普通版和 `with_gvisor` 两套整仓库回归，均设置 `SKIP_CONCURRENT_TEST=1 SKIP_INTEROP_TEST=1`。邻居、规则、tunnel、配置和配置 API 包的 race detector 检查通过。隔离网络命名空间中的真实 ARP/NDP 补查与探测、邻居事件和删除测试通过。两个构建的二进制均通过普通、逻辑和 classical provider 的 SRC-MAC 配置校验，以及默认 `mips`、新 TUN 字段与 SRC-MAC 选项的 API 部分更新、非法更新拒绝和配置热重载检查；API 冒烟中 TUN 保持关闭，不据此宣称实际 TUN 数据路径或系统 DNS 配置已实测。
+
 以下仍不作为已验证能力宣称：
 
 1. 真实路由器上 TUN、TProxy、REDIRECT 各入口的 TCP/UDP 端到端效果，以及设备刚换 IPv6 地址时的首连接命中率、未知窗口分布。
@@ -427,3 +431,5 @@ Linux 隔离网络命名空间测试使用 veth 与 `ip neigh`，通过真实 ne
 - 2026-09-23：审计并修复来源 MAC 补救边界问题：排除 /0 前缀以防位移溢出与外网误探测；增加令牌桶时钟回退防御；修复请求合并在等待者全部退出时的 flight 解绑竞态；增强 provider Count 非空保护。引入可选接口白名单配置 `src-mac-interfaces` 防止向 WAN 泄露 ARP/NDP；优化定向补查单接口容错，并在未配白名单但系统接口超限时保留单接口主动探测。
 
 - 2026-09-23：修复补查部分接口报错时误把其他接口的 MAC 认定为唯一；复制接口白名单配置，避免调用方通过切片别名绕过重配置。
+
+- 2026-11-05：合并上游 `Alpha` 的 33 个提交至 `69c16319`，记录 TUN 默认协议栈和新配置选项的影响；完成双构建整仓库回归、SRC-MAC 核心并发检测、隔离 ARP/NDP 集成测试及二进制配置/API 冒烟，保留真实 TUN 数据路径与路由器首连接测量的待验证边界。
